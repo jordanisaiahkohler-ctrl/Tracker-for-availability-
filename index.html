@@ -119,6 +119,7 @@
     }
   </style>
 </head>
+
 <body>
   <div class="controls">
     <div class="group">
@@ -211,6 +212,52 @@
     // key = `${dateISO}|${slotIndex}` -> boolean
     let state = Object.create(null);
 
+    // ----- Shared state (Cloudflare Pages Functions) -----
+    let sharedPass = localStorage.getItem("sched_pass") || "";
+    if (!sharedPass) {
+      sharedPass = prompt("Enter schedule password:") || "";
+      localStorage.setItem("sched_pass", sharedPass);
+    }
+
+    async function loadSharedState() {
+      try {
+        const res = await fetch("/api/state", { cache: "no-store" });
+        if (!res.ok) return;
+        const data = await res.json();
+
+        state = Object.create(null);
+        for (const k of (data.blocked || [])) state[k] = true;
+
+        document.querySelectorAll("td.slot").forEach(td => {
+          const k = td.dataset.key;
+          if (!k) return;
+          td.classList.toggle("on", !!state[k]);
+        });
+      } catch (_) { /* ignore */ }
+    }
+
+    async function toggleShared(key, on) {
+      try {
+        const res = await fetch("/api/toggle", {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-pass": sharedPass
+          },
+          body: JSON.stringify({ key, on })
+        });
+
+        if (res.status === 401) {
+          localStorage.removeItem("sched_pass");
+          sharedPass = prompt("Wrong password. Enter schedule password:") || "";
+          localStorage.setItem("sched_pass", sharedPass);
+          return;
+        }
+
+        await loadSharedState();
+      } catch (_) { /* ignore */ }
+    }
+
     // ----- Build grid -----
     const grid = document.getElementById("grid");
     const startTimeEl = document.getElementById("startTime");
@@ -243,7 +290,6 @@
         return;
       }
 
-      // build list of slot times
       const slots = [];
       for (let t = startMin; t <= endMin; t += step){
         slots.push(t);
@@ -252,10 +298,8 @@
       const startDate = new Date(startDateEl.value + "T00:00:00");
       const days = weeks * 7;
 
-      // clear table
       grid.innerHTML = "";
 
-      // header row
       const thead = document.createElement("tr");
 
       const thTime = document.createElement("th");
@@ -272,7 +316,6 @@
       }
       grid.appendChild(thead);
 
-      // body rows
       for (let r=0; r<slots.length; r++){
         const tr = document.createElement("tr");
 
@@ -297,6 +340,9 @@
         }
         grid.appendChild(tr);
       }
+
+      // after rebuilding the table, repaint from server state
+      loadSharedState();
     }
 
     // ----- Interaction: click + drag paint/erase -----
@@ -306,16 +352,14 @@
     function setCell(td, on){
       const key = td.dataset.key;
       if (!key) return;
-      if (on){
-        td.classList.add("on");
-        state[key] = true;
-      } else {
-        td.classList.remove("on");
-        delete state[key];
-      }
+
+      td.classList.toggle("on", on);
+      if (on) state[key] = true;
+      else delete state[key];
+
+      toggleShared(key, on);
     }
 
-    // Prevent context menu (so right-drag erase feels good)
     document.addEventListener("contextmenu", e => {
       if (e.target && e.target.classList && e.target.classList.contains("slot")) e.preventDefault();
     });
@@ -326,7 +370,6 @@
 
       isMouseDown = true;
 
-      // Right click = erase; left click = toggle+paint that direction
       if (e.button === 2){
         paintMode = false;
         setCell(td, false);
@@ -352,18 +395,24 @@
     // ----- Buttons -----
     document.getElementById("buildBtn").addEventListener("click", rebuild);
 
-    document.getElementById("clearBtn").addEventListener("click", () => {
+    document.getElementById("clearBtn").addEventListener("click", async () => {
+      // local clear
       state = Object.create(null);
-      // clear UI fast
       document.querySelectorAll("td.slot.on").forEach(td => td.classList.remove("on"));
+
+      // server clear (optional): brute-force by toggling off everything currently on
+      // simplest: reload shared after; true clear should be a /api/clear endpoint
+      await loadSharedState();
     });
 
     document.getElementById("printBtn").addEventListener("click", () => {
       window.print();
     });
 
-    // Initial build
+    // Initial build + initial shared load + polling
     rebuild();
+    loadSharedState();
+    setInterval(loadSharedState, 2000);
   </script>
 </body>
 </html>
