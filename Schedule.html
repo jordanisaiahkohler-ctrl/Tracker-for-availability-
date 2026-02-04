@@ -1,0 +1,369 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Availibility Checker</title>
+  <style>
+    :root{
+      --cell-h: 32px;
+      --cell-w: 110px;
+      --time-w: 80px;
+      --border: #d0d0d0;
+      --header-bg: #eeeeee;
+      --slot-bg: #f7f7f7;
+      --on: #18e218;
+      --text: #111;
+    }
+    body{
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: var(--text);
+      margin: 14px;
+    }
+    .controls{
+      display:flex;
+      flex-wrap: wrap;
+      gap: 10px 14px;
+      align-items: end;
+      margin-bottom: 10px;
+    }
+    .controls label{
+      display:block;
+      font-size: 12px;
+      margin-bottom: 4px;
+    }
+    .controls input, .controls select, .controls button{
+      font-size: 14px;
+      padding: 6px 8px;
+    }
+    .controls .group{
+      display:flex;
+      gap: 10px;
+      align-items:end;
+      flex-wrap: wrap;
+    }
+    button{
+      cursor: pointer;
+    }
+    .hint{
+      font-size: 12px;
+      opacity: .85;
+      margin: 6px 0 10px;
+    }
+
+    .wrap{
+      overflow:auto;
+      border: 1px solid var(--border);
+      max-height: 80vh;
+    }
+
+    table{
+      border-collapse: collapse;
+      width: max-content;
+      background: white;
+    }
+    th, td{
+      border: 1px solid var(--border);
+      text-align: center;
+      user-select: none;
+    }
+    th{
+      background: var(--header-bg);
+      font-weight: 700;
+      padding: 8px 6px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    th.timehead{
+      left: 0;
+      z-index: 3;
+      min-width: var(--time-w);
+      width: var(--time-w);
+    }
+    td.time{
+      background: var(--header-bg);
+      font-weight: 700;
+      min-width: var(--time-w);
+      width: var(--time-w);
+      position: sticky;
+      left: 0;
+      z-index: 1;
+    }
+    td.slot{
+      min-width: var(--cell-w);
+      width: var(--cell-w);
+      height: var(--cell-h);
+      background: var(--slot-bg);
+    }
+    td.slot.on{
+      background: var(--on);
+    }
+
+    .rowlabel{
+      font-weight:700;
+    }
+
+    /* Print/PDF styling */
+    @media print{
+      body{ margin: 0.35in; }
+      .controls, .hint { display:none !important; }
+      .wrap{
+        border: none;
+        max-height: none;
+        overflow: visible;
+      }
+      th, td{ border-color: #999; }
+      table{ page-break-inside: auto; }
+      tr{ page-break-inside: avoid; page-break-after: auto; }
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <div class="group">
+      <div>
+        <label for="startTime">Start</label>
+        <input id="startTime" type="time" value="08:00" step="60" />
+      </div>
+      <div>
+        <label for="endTime">End</label>
+        <input id="endTime" type="time" value="18:00" step="60" />
+      </div>
+      <div>
+        <label for="stepMin">Step (minutes)</label>
+        <select id="stepMin">
+          <option value="15">15</option>
+          <option value="30" selected>30</option>
+          <option value="60">60</option>
+        </select>
+      </div>
+      <div>
+        <label for="weeks">Weeks</label>
+        <select id="weeks">
+          <option value="1" selected>1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+      </div>
+      <div>
+        <label for="startDate">Start date</label>
+        <input id="startDate" type="date" />
+      </div>
+      <div>
+        <button id="buildBtn" type="button">Rebuild Grid</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <button id="clearBtn" type="button">Clear</button>
+      <button id="printBtn" type="button">Save to PDF</button>
+    </div>
+  </div>
+
+  <div class="hint">
+    Click cells to toggle. Click-drag to paint. Right-click-drag to erase.
+  </div>
+
+  <div class="wrap">
+    <table id="grid" aria-label="availability grid"></table>
+  </div>
+
+  <script>
+    // ----- Helpers -----
+    const pad2 = n => String(n).padStart(2,'0');
+
+    function toMinutes(hhmm){
+      const [h,m] = hhmm.split(":").map(Number);
+      return h*60 + m;
+    }
+
+    function minutesToLabel(min){
+      let h = Math.floor(min/60) % 24;
+      let m = min % 60;
+      const ampm = h >= 12 ? "pm" : "am";
+      let hr12 = h % 12;
+      if (hr12 === 0) hr12 = 12;
+      return m === 0 ? `${hr12}${ampm}` : `${hr12}:${pad2(m)}${ampm}`;
+    }
+
+    function addDays(date, days){
+      const d = new Date(date);
+      d.setDate(d.getDate() + days);
+      return d;
+    }
+
+    function fmtHeaderDate(d){
+      const dow = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
+      const mon = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][d.getMonth()];
+      return `${dow}<br>${d.getDate()}<br>${mon}`;
+    }
+
+    function dateISO(d){
+      const y = d.getFullYear();
+      const m = pad2(d.getMonth()+1);
+      const day = pad2(d.getDate());
+      return `${y}-${m}-${day}`;
+    }
+
+    // ----- State (single schedule) -----
+    // key = `${dateISO}|${slotIndex}` -> boolean
+    let state = Object.create(null);
+
+    // ----- Build grid -----
+    const grid = document.getElementById("grid");
+    const startTimeEl = document.getElementById("startTime");
+    const endTimeEl = document.getElementById("endTime");
+    const stepMinEl = document.getElementById("stepMin");
+    const weeksEl = document.getElementById("weeks");
+    const startDateEl = document.getElementById("startDate");
+
+    // default start date: next Monday (or today if already Monday)
+    (function initStartDate(){
+      const now = new Date();
+      const day = now.getDay(); // 0 Sun .. 1 Mon
+      const deltaToMon = (1 - day + 7) % 7;
+      const nextMon = addDays(now, deltaToMon);
+      startDateEl.value = dateISO(nextMon);
+    })();
+
+    function rebuild(){
+      const startMin = toMinutes(startTimeEl.value);
+      const endMin = toMinutes(endTimeEl.value);
+      const step = parseInt(stepMinEl.value, 10);
+      const weeks = parseInt(weeksEl.value, 10);
+
+      if (!Number.isFinite(startMin) || !Number.isFinite(endMin) || endMin <= startMin){
+        alert("End time must be after start time.");
+        return;
+      }
+      if (!Number.isFinite(step) || step <= 0){
+        alert("Step must be a positive number.");
+        return;
+      }
+
+      // build list of slot times
+      const slots = [];
+      for (let t = startMin; t <= endMin; t += step){
+        slots.push(t);
+      }
+
+      const startDate = new Date(startDateEl.value + "T00:00:00");
+      const days = weeks * 7;
+
+      // clear table
+      grid.innerHTML = "";
+
+      // header row
+      const thead = document.createElement("tr");
+
+      const thTime = document.createElement("th");
+      thTime.className = "timehead";
+      thTime.innerHTML = "&nbsp;";
+      thead.appendChild(thTime);
+
+      for (let i=0; i<days; i++){
+        const d = addDays(startDate, i);
+        const th = document.createElement("th");
+        th.innerHTML = fmtHeaderDate(d);
+        th.dataset.date = dateISO(d);
+        thead.appendChild(th);
+      }
+      grid.appendChild(thead);
+
+      // body rows
+      for (let r=0; r<slots.length; r++){
+        const tr = document.createElement("tr");
+
+        const tdTime = document.createElement("td");
+        tdTime.className = "time";
+        tdTime.textContent = minutesToLabel(slots[r]);
+        tr.appendChild(tdTime);
+
+        for (let c=0; c<days; c++){
+          const d = addDays(startDate, c);
+          const iso = dateISO(d);
+          const key = `${iso}|${r}`;
+
+          const td = document.createElement("td");
+          td.className = "slot";
+          td.dataset.key = key;
+          td.dataset.row = String(r);
+          td.dataset.date = iso;
+
+          if (state[key]) td.classList.add("on");
+          tr.appendChild(td);
+        }
+        grid.appendChild(tr);
+      }
+    }
+
+    // ----- Interaction: click + drag paint/erase -----
+    let isMouseDown = false;
+    let paintMode = null; // true=paint on, false=erase
+
+    function setCell(td, on){
+      const key = td.dataset.key;
+      if (!key) return;
+      if (on){
+        td.classList.add("on");
+        state[key] = true;
+      } else {
+        td.classList.remove("on");
+        delete state[key];
+      }
+    }
+
+    // Prevent context menu (so right-drag erase feels good)
+    document.addEventListener("contextmenu", e => {
+      if (e.target && e.target.classList && e.target.classList.contains("slot")) e.preventDefault();
+    });
+
+    grid.addEventListener("mousedown", (e) => {
+      const td = e.target.closest("td.slot");
+      if (!td) return;
+
+      isMouseDown = true;
+
+      // Right click = erase; left click = toggle+paint that direction
+      if (e.button === 2){
+        paintMode = false;
+        setCell(td, false);
+      } else {
+        const willBeOn = !td.classList.contains("on");
+        paintMode = willBeOn;
+        setCell(td, willBeOn);
+      }
+    });
+
+    grid.addEventListener("mouseover", (e) => {
+      if (!isMouseDown) return;
+      const td = e.target.closest("td.slot");
+      if (!td) return;
+      setCell(td, paintMode);
+    });
+
+    document.addEventListener("mouseup", () => {
+      isMouseDown = false;
+      paintMode = null;
+    });
+
+    // ----- Buttons -----
+    document.getElementById("buildBtn").addEventListener("click", rebuild);
+
+    document.getElementById("clearBtn").addEventListener("click", () => {
+      state = Object.create(null);
+      // clear UI fast
+      document.querySelectorAll("td.slot.on").forEach(td => td.classList.remove("on"));
+    });
+
+    document.getElementById("printBtn").addEventListener("click", () => {
+      window.print();
+    });
+
+    // Initial build
+    rebuild();
+  </script>
+</body>
+</html>
